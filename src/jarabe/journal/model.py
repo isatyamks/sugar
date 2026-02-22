@@ -43,9 +43,10 @@ DS_DBUS_PATH = '/org/laptop/sugar/DataStore'
 
 # Properties the journal cares about.
 PROPERTIES = ['activity', 'activity_id', 'buddies', 'bundle_id',
-              'creation_time', 'filesize', 'icon-color', 'keep', 'mime_type',
-              'mountpoint', 'mtime', 'progress', 'timestamp', 'title', 'uid',
-              'preview']
+              'creation_time', 'description', 'filesize', 'icon-color',
+              'keep', 'mime_type', 'mountpoint', 'mtime', 'progress',
+              'tags', 'timestamp', 'title', 'uid', 'preview',
+              'ai_reflections']
 
 MIN_PAGES_TO_CACHE = 3
 MAX_PAGES_TO_CACHE = 5
@@ -580,6 +581,38 @@ def find(query_, page_size):
     if mount_points[0] == '/':
         return DatastoreResultSet(query, page_size)
     return InplaceResultSet(query, page_size, mount_points[0])
+
+
+def find_entries(query, limit=10):
+    """Return a flat list of metadata dicts from the datastore.
+
+    Unlike find() which returns a paginated ResultSet for UI display,
+    this performs a single D-Bus query and returns all matching entries
+    directly. Intended for internal services (e.g. AI reflection history).
+
+    Args:
+        query: Dict of datastore query parameters. Supported keys:
+               'bundle_id', 'activity', 'mime_type', 'query' (text search),
+               'order_by' (e.g. ['-timestamp']), 'offset'.
+        limit: Maximum number of entries to return (default 10).
+
+    Returns:
+        List of metadata dicts, each containing PROPERTIES fields.
+    """
+    q = query.copy()
+    q['limit'] = limit
+    if 'order_by' not in q:
+        q['order_by'] = ['-timestamp']
+
+    try:
+        entries, _total_count = _get_datastore().find(
+            q, PROPERTIES, byte_arrays=True)
+        for entry in entries:
+            entry['mountpoint'] = '/'
+        return entries
+    except Exception:
+        logging.exception('find_entries failed for query %r', query)
+        return []
 
 
 def _get_mount_point(path):

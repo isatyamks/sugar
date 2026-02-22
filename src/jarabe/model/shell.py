@@ -701,8 +701,56 @@ class ShellModel(GObject.GObject):
                 logging.error('No activities are running')
                 self._set_active_activity(None)
 
+        # Triger AI Reflection
+        try:
+            if not home_activity.is_journal():
+                activity_id = home_activity.get_activity_id()
+                bundle_id = home_activity.get_bundle_id()
+                # Local import to avoid circular dependencies
+                from jarabe.journal import model as journal_model
+                from jarabe.model import reflection
+
+                # Check if metadata exists (it should if saved)
+                metadata = journal_model.get(activity_id)
+                if metadata and metadata.get('uid'):
+                    service = reflection.get_service()
+
+                    # Fetch past journal entries for same activity type
+                    history = service.get_activity_history(
+                        bundle_id=bundle_id,
+                        exclude_uid=metadata.get('uid'),
+                    )
+
+                    # Use GLib.idle_add to ensure this runs safely
+                    # without blocking the activity removal
+                    GLib.idle_add(
+                        service.get_reflection_prompt,
+                        metadata,
+                        history,
+                        lambda prompt: self._show_reflection_dialog(
+                            metadata, prompt))
+
+        except Exception as e:
+            logging.exception("Failed to trigger reflection: %s", e)
+
         self.emit('activity-removed', home_activity)
         self._activities.remove(home_activity)
+
+    def _show_reflection_dialog(self, metadata, prompt):
+        try:
+            from jarabe.view.reflectiondialog import ReflectionDialog
+            from jarabe.desktop import homewindow
+            from jarabe.model import reflection
+
+            parent = homewindow.get_instance()
+            # homewindow is a Window object, needs to be passed as Gtk.Window
+            
+            dialog = ReflectionDialog(parent, metadata, prompt,
+                                      reflection.get_service().save_reflection)
+            dialog.show()
+        except Exception as e:
+            logging.exception("Error showing reflection dialog: %s", e)
+
 
     def notify_launch(self, activity_id, service_name):
         registry = get_registry()
