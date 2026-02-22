@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright (C) 2024 Sugar Labs
 #
 # This program is free software: you can redistribute it and/or modify
@@ -39,7 +40,7 @@ class ReflectionService(object):
     def __init__(self):
         self._pending_reflections = {}
 
-    # ── Journal Data Retrieval ──────────────────────────────────
+    # -- Journal Data Retrieval ------------------------------------
 
     def get_activity_context(self, metadata):
         """
@@ -185,7 +186,7 @@ class ReflectionService(object):
                             'field for %s', metadata.get('uid', '?'))
         return []
 
-    # ── Prompt Generation (mock → will call backend) ────────────
+    # -- Prompt Generation (mock -> will call backend) ------------
 
     def get_reflection_prompt(self, metadata, history, callback):
         """
@@ -255,7 +256,7 @@ class ReflectionService(object):
         callback(prompt)
         return False  # Remove the GLib timeout source
 
-    # ── Save ────────────────────────────────────────────────────
+    # -- Save ------------------------------------------------------
 
     def save_reflection(self, object_id, prompt, answer):
         """
