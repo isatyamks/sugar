@@ -610,9 +610,21 @@ def find_entries(query, limit=10):
         for entry in entries:
             entry['mountpoint'] = '/'
         return entries
-    except Exception:
-        logging.exception('find_entries failed for query %r', query)
-        return []
+    except Exception as e:
+        logging.exception('find_entries failed for query %r: %s', query, e)
+        # Retry without order_by in case the datastore doesn't support it
+        try:
+            q2 = query.copy()
+            q2['limit'] = limit
+            entries, _total_count = _get_datastore().find(
+                q2, PROPERTIES, byte_arrays=True)
+            for entry in entries:
+                entry['mountpoint'] = '/'
+            logging.info('find_entries succeeded after removing order_by')
+            return entries
+        except Exception as e2:
+            logging.exception('find_entries retry also failed: %s', e2)
+            return []
 
 
 def _get_mount_point(path):

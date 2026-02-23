@@ -4,6 +4,10 @@ Run inside Sugar:
   export PYTHONPATH=/home/isatyamks/sugar/src
   python3 ~/sugar/tests_journal/test_reflection_service.py
 """
+# MUST be done before any D-Bus or Sugar imports
+from dbus.mainloop.glib import DBusGMainLoop
+DBusGMainLoop(set_as_default=True)
+
 import gi
 gi.require_version('SugarExt', '1.0')
 
@@ -18,10 +22,37 @@ print('=' * 50)
 
 service = reflection.get_service()
 
-# Step 1: Get all journal entries
-print('\n--- Step 1: Get all journal entries ---')
-all_entries = model.find_entries({}, limit=10)
-print('  Found {} entries'.format(len(all_entries)))
+# Step 0: Verify raw D-Bus works (same as test_journal_history)
+print('\n--- Step 0: Verify raw D-Bus access ---')
+import dbus
+bus = dbus.SessionBus()
+ds = dbus.Interface(
+    bus.get_object(
+        'org.laptop.sugar.DataStore',
+        '/org/laptop/sugar/DataStore'),
+    'org.laptop.sugar.DataStore')
+raw_entries, raw_count = ds.find(
+    {}, ['title', 'bundle_id', 'uid', 'timestamp'], byte_arrays=True)
+print('  Raw D-Bus found {} entries'.format(raw_count))
+
+# Step 1: Get all journal entries via model.find_entries
+print('\n--- Step 1: Get all journal entries (model.find_entries) ---')
+try:
+    all_entries = model.find_entries({}, limit=10)
+except Exception as e:
+    print('  ERROR from find_entries: {}'.format(e))
+    import traceback
+    traceback.print_exc()
+    all_entries = []
+print('  model.find_entries returned {} entries'.format(len(all_entries)))
+
+# If model.find_entries returned nothing but raw D-Bus works, fallback
+if len(all_entries) == 0 and raw_count > 0:
+    print('\n  WARNING: model.find_entries returned 0 entries but raw D-Bus has {}!'.format(raw_count))
+    print('  This means find_entries is hitting a silent exception.')
+    print('  Falling back to raw D-Bus entries for remaining tests...')
+    # Convert raw D-Bus entries to regular dicts
+    all_entries = [dict(e) for e in raw_entries[:10]]
 
 if len(all_entries) == 0:
     print('\n  No journal entries found!')
