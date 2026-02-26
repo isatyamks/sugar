@@ -17,7 +17,16 @@
 import logging
 import json
 import time
+import threading
 from gi.repository import GLib
+
+# Use stdlib for HTTP — Sugar doesn't ship 'requests'
+try:
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError, HTTPError
+    HAS_URLLIB = True
+except ImportError:
+    HAS_URLLIB = False
 
 from jarabe.journal import model
 
@@ -188,13 +197,44 @@ class ReflectionService(object):
 
     # -- Prompt Generation (mock -> will call backend) ------------
 
+    def _build_request_payload(self, metadata, history):
+        """
+        Map Sugar Journal data to the backend ReflectionRequest schema.
+
+        Converts the raw journal metadata + history into the JSON
+        structure expected by POST /api/v1/reflect.
+
+        Returns:
+            dict matching the ReflectionRequest Pydantic model.
+        """
+        context = self.get_activity_context(metadata)
+
+        # Map to backend's ActivityContext schema
+        payload = {
+            'context': {
+                'activity_id': context.get('activity_id', '') or 'unknown',
+                'bundle_id': context.get('bundle_id', '') or 'unknown',
+                'title': context.get('title', 'Untitled'),
+                'description': context.get('description'),
+                'mime_type': context.get('mime_type'),
+                'tags': context.get('tags', []),
+                'duration_seconds': context.get('duration_seconds'),
+            },
+            'learner': {
+                'language': 'en',
+            },
+            'history': history,
+        }
+
+        return payload
+
     def get_reflection_prompt(self, metadata, history, callback):
         """
         Get a reflection prompt for the given activity.
 
-        Currently uses a local mock. In production, this will POST to
-        the FastAPI backend at AI_SERVICE_URL with the activity context
-        and history.
+        Sends the activity context and history to the FastAPI backend
+        at AI_SERVICE_URL via HTTP POST. Falls back to a local mock
+        if the API server is unreachable.
 
         Args:
             metadata: Journal entry metadata dict.
@@ -206,17 +246,76 @@ class ReflectionService(object):
                        '(with %d history entries)',
                        metadata.get('title', 'Untitled'), len(history))
 
-        # Simulate network delay
-        GLib.timeout_add_seconds(
-            1, self._mock_api_response, metadata, history, callback)
+        # Make the API call in a background thread so we don't
+        # block the GTK main loop
+        thread = threading.Thread(
+            target=self._call_api,
+            args=(metadata, history, callback),
+            daemon=True,
+        )
+        thread.start()
+
+    def _call_api(self, metadata, history, callback):
+        """
+        POST to the FastAPI backend and deliver prompt via callback.
+
+        Runs in a background thread. On success, schedules the
+        callback on the GLib main loop. On failure, falls back to
+        the local mock.
+        """
+        if not HAS_URLLIB:
+            logging.warning('ReflectionService: urllib not available, '
+                            'using mock fallback')
+            GLib.idle_add(self._mock_api_response,
+                          metadata, history, callback)
+            return
+
+        payload = self._build_request_payload(metadata, history)
+        json_data = json.dumps(payload).encode('utf-8')
+
+        try:
+            req = Request(
+                AI_SERVICE_URL,
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            response = urlopen(req, timeout=15)
+            response_body = response.read().decode('utf-8')
+            result = json.loads(response_body)
+
+            # Extract the prompt text from ReflectionResponse schema
+            prompt_text = result.get('prompt', {}).get(
+                'prompt_text', '')
+
+            if prompt_text:
+                logging.info('ReflectionService: Got prompt from API: %s',
+                             prompt_text[:80])
+                GLib.idle_add(callback, prompt_text)
+            else:
+                logging.warning('ReflectionService: Empty prompt from API, '
+                                'falling back to mock')
+                GLib.idle_add(self._mock_api_response,
+                              metadata, history, callback)
+
+        except (URLError, HTTPError) as e:
+            logging.warning('ReflectionService: API call failed (%s), '
+                            'using mock fallback', e)
+            GLib.idle_add(self._mock_api_response,
+                          metadata, history, callback)
+        except Exception as e:
+            logging.exception('ReflectionService: Unexpected error '
+                              'calling API: %s', e)
+            GLib.idle_add(self._mock_api_response,
+                          metadata, history, callback)
 
     def _mock_api_response(self, metadata, history, callback):
         """
-        Returns a mock prompt based on activity type and history.
+        Local fallback: returns a rule-based prompt.
 
-        In production, this will be replaced by an HTTP POST to the
-        FastAPI backend. The backend will use the context + history
-        to select a framework and generate an LLM-powered prompt.
+        Used when the FastAPI backend is unavailable. Generates
+        a basic reflection question based on activity type and
+        whether the learner has past history.
         """
         mime_type = metadata.get('mime_type', 'unknown')
         title = metadata.get('title', 'Untitled')
@@ -252,7 +351,7 @@ class ReflectionService(object):
                           "differently this time?").format(
                               history_count, title, last_title)
 
-        logging.debug('ReflectionService: Generated prompt: %s', prompt)
+        logging.debug('ReflectionService: Mock prompt: %s', prompt)
         callback(prompt)
         return False  # Remove the GLib timeout source
 

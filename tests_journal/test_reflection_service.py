@@ -91,12 +91,14 @@ for i, h in enumerate(history):
         'yes' if h['reflection'] else 'no'))
 
 # Step 5: Get past reflections for this entry
-print('\n--- Step 5: get_past_reflections() ---')
-reflections = service.get_past_reflections(entry)
-print('  Found {} reflections on this entry'.format(len(reflections)))
+# Step 6: Build the API request payload
+print('\n--- Step 6: Build request payload for API ---')
+payload = service._build_request_payload(entry, history)
+print('  Payload that will be POSTed to {}:'.format(reflection.AI_SERVICE_URL))
+print('  {}'.format(json.dumps(payload, indent=2, default=str)))
 
-# Step 6: Generate a prompt
-print('\n--- Step 6: Generate reflection prompt ---')
+# Step 7: Test mock (fallback) prompt
+print('\n--- Step 7: Generate prompt (mock fallback) ---')
 prompt_result = []
 
 
@@ -104,12 +106,34 @@ def on_prompt(prompt):
     prompt_result.append(prompt)
 
 
-# Call directly (skip GLib timer in test)
 service._mock_api_response(entry, history, on_prompt)
 if prompt_result:
-    print('  Prompt: "{}"'.format(prompt_result[0]))
+    print('  Mock prompt: "{}"'.format(prompt_result[0]))
 else:
-    print('  ERROR: No prompt generated!')
+    print('  ERROR: No mock prompt generated!')
+
+# Step 8: Test real API call (if server is running)
+print('\n--- Step 8: Test real API call ---')
+try:
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError
+    json_data = json.dumps(payload).encode('utf-8')
+    req = Request(
+        reflection.AI_SERVICE_URL,
+        data=json_data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    resp = urlopen(req, timeout=5)
+    result = json.loads(resp.read().decode('utf-8'))
+    print('  API Response: {}'.format(json.dumps(result, indent=2)))
+except URLError as e:
+    print('  API server not running at {} ({})'.format(
+        reflection.AI_SERVICE_URL, e))
+    print('  This is expected if you haven\'t started the backend yet.')
+    print('  To start it: cd ai-reflection-service && uvicorn app.main:app')
+except Exception as e:
+    print('  API call error: {}'.format(e))
 
 print('\n' + '=' * 50)
 print('  All tests passed!')
